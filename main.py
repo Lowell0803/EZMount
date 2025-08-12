@@ -4,6 +4,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 import subprocess, threading, shutil, os, time, shlex, json
 import uuid
+import webbrowser
 
 import sv_ttk
 import darkdetect
@@ -199,6 +200,8 @@ class EZMountApp(tk.Tk):
         ttk.Button(actions_panel, text="Toggle Startup", command=self.action_toggle_startup).pack(fill="x", pady=(0,6))
         ttk.Button(actions_panel, text="Remove", command=self.action_remove_selected).pack(fill="x", pady=(0,6))
         ttk.Button(actions_panel, text="Add...", command=self.show_add_mapping_dialog).pack(fill="x", pady=(0,6))
+        ttk.Button(actions_panel, text="Donate", command=lambda: webbrowser.open("https://buymeacoffee.com/yvanlowellaquino")).pack(fill="x", pady=(0,6))
+        
 
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
