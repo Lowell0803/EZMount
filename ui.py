@@ -49,21 +49,18 @@ class EZMountUI(tk.Tk):
         mid = ttk.Frame(parent)
         mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-        # --- Left and right panes: make them both expand equally so they take ~50/50 ---
         left = ttk.Frame(mid)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,6))
 
         right = ttk.Frame(mid)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6,0))
 
-        # LEFT: read-only conf view
         lbl_conf = ttk.Label(left, text="rclone.conf (read-only):")
         lbl_conf.pack(anchor="w")
         self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE, height=18)
         self.txt_conf.pack(fill=tk.BOTH, expand=True)
         self.txt_conf.configure(state=tk.DISABLED)
 
-        # RIGHT: mappings area (keeps original widths/behavior inside)
         hdr = ttk.Label(right, text="Mappings (editable): remote -> label + drive letter", font=("Segoe UI", 10, "bold"))
         hdr.pack(anchor="w", pady=(0,6))
 
@@ -91,11 +88,8 @@ class EZMountUI(tk.Tk):
         bottom = ttk.Frame(right)
         bottom.pack(fill=tk.X, pady=(6,0))
 
-        # renamed button text -> "Load mappings"
         btn_auto = ttk.Button(bottom, text="Load mappings", command=self._auto_generate_mappings)
         btn_auto.pack(side=tk.LEFT)
-
-        # removed Add mapping button per request (no btn_add)
 
         btn_clear = ttk.Button(bottom, text="Clear mappings", command=self._clear_mappings)
         btn_clear.pack(side=tk.LEFT, padx=(6,0))
@@ -150,7 +144,7 @@ class EZMountUI(tk.Tk):
         footer.pack(fill=tk.X, padx=10, pady=(0,8))
         ttk.Label(footer, text="EZMount — UI-only preview. Nothing is written/run.").pack(side=tk.LEFT)
 
-    # ----- Actions (unchanged) -----
+    # ----- Actions -----
     def _select_conf_file(self):
         p = filedialog.askopenfilename(title="Select rclone.conf", filetypes=[("conf","*.conf"), ("All","*.*")])
         if not p:
@@ -163,30 +157,53 @@ class EZMountUI(tk.Tk):
             self.txt_conf.delete("1.0", tk.END)
             self.txt_conf.insert(tk.END, text)
             self.txt_conf.configure(state=tk.DISABLED)
-            messagebox.showinfo("Loaded (preview)", f"Loaded (preview-only): {p}\n\n"
-                                "If your config is encrypted, enter the password in the password box before mounting.")
+
+            # auto-generate mappings after load
+            self._auto_generate_mappings()
+
+            messagebox.showinfo(
+                "Loaded (preview)",
+                f"Loaded (preview-only): {p}\n\n"
+                "If your config is encrypted, enter the password in the password box before mounting."
+            )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read file:\n{e}")
 
     def _auto_generate_mappings(self):
-        if not self.loaded_conf_text:
-            messagebox.showwarning("No config", "Load an rclone.conf first.")
-            return
-        remotes = parse_remotes_from_conf(self.loaded_conf_text)
-        if not remotes:
-            messagebox.showinfo("No remotes", "No remotes detected in the loaded config (preview parser).")
-            return
-        existing = {m['remote_widget'].get() for m in self.mappings}
-        drive_ord = ord('X')
-        for r in remotes:
-            if r in existing:
-                continue
-            drive_letter = f"{chr(drive_ord)}:"
-            drive_ord += 1
-            if drive_ord > ord('Z'):
-                drive_ord = ord('A')
-            self._add_mapping_row(remote=r, label=r, drive=drive_letter)
-        messagebox.showinfo("Mappings created", f"Generated mappings for {len(remotes)} remotes (preview).")
+        self.mappings.clear()
+        drive_letter = ord('X')  # start from X: backwards
+        
+        for section in self.config.sections():
+            mapping_name = section
+            drive_letter_chr = chr(drive_letter)
+
+            # Detect S3-style remote
+            if self.config.get(section, "type", fallback="").lower() == "s3":
+                if tk.messagebox.askyesno("Multiple Buckets?",
+                    f"Remote '{section}' looks like S3.\nDo you want to add mappings for multiple buckets?"):
+                    
+                    bucket_input = tk.simpledialog.askstring(
+                        "Enter Buckets",
+                        f"Enter bucket names for '{section}' (comma-separated):"
+                    )
+                    if bucket_input:
+                        buckets = [b.strip() for b in bucket_input.split(",") if b.strip()]
+                        for bucket in buckets:
+                            mapping_entry = {
+                                "remote": f"{section}:{bucket}",
+                                "drive": f"{drive_letter_chr}:"
+                            }
+                            self.mappings.append(mapping_entry)
+                            drive_letter -= 1
+                            drive_letter_chr = chr(drive_letter)
+                        continue  # skip default single mapping
+            
+            # Default single mapping
+            self.mappings.append({
+                "remote": f"{mapping_name}:",
+                "drive": f"{drive_letter_chr}:"
+            })
+            drive_letter -= 1
 
     def _add_mapping_row(self, remote="new-remote", label=None, drive="X:"):
         if label is None:
@@ -285,3 +302,6 @@ class EZMountUI(tk.Tk):
 
     def _show_about(self):
         messagebox.showinfo("About EZMount", f"{APP_TITLE}\n\nUI-only preview.\n\nAuthor: (your name)\nContact: (optional)")
+
+if __name__ == "__main__":
+    EZMountUI().mainloop()
