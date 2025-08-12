@@ -56,27 +56,40 @@ def ensure_startup_folder():
         p.mkdir(parents=True, exist_ok=True)
     return p
 
-def make_themed_text(parent, height=6, wrap=tk.NONE):
-    frame = ttk.Frame(parent)
-    text = tk.Text(frame, wrap=wrap, height=height, relief="flat", bd=0)
-    vs = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
-    text.configure(yscrollcommand=vs.set)
-    style = ttk.Style()
-    bg = style.lookup("TEntry", "fieldbackground") or style.lookup("TLabel", "background") or "#1c1c1c"
-    fg = style.lookup("TLabel", "foreground") or "#ffffff"
-    try:
-        text.configure(bg=bg, fg=fg, insertbackground=fg)
-    except Exception:
-        pass
-    vs.pack(side="right", fill="y")
-    text.pack(side="left", fill="both", expand=True)
-    return frame, text
-
 class EZMountApp(tk.Tk):
     def __init__(self):
         super().__init__()
+
+        # pick theme from system (darkdetect), default to light if unknown
         theme = (darkdetect.theme() or "Light").lower()
         sv_ttk.set_theme(theme)
+
+        # now read back active theme and set safe color tokens for native widgets
+        active_theme = sv_ttk.get_theme() or theme
+        style = ttk.Style()
+
+        if active_theme.lower().startswith("dark"):
+            self._bg_text = "#1c1c1c"
+            self._fg_text = "#eaeaea"
+            self._tree_bg = "#252525"
+            self._tree_fg = "#eaeaea"
+            self._canvas_bg = "#1a1a1a"
+            self._entry_bg = "#2a2a2a"
+        else:
+            self._bg_text = "#ffffff"
+            self._fg_text = "#111111"
+            self._tree_bg = "#ffffff"
+            self._tree_fg = "#111111"
+            self._canvas_bg = "#ffffff"
+            self._entry_bg = "#ffffff"
+
+        # configure Treeview colors explicitly so headers + rows follow theme
+        try:
+            style.configure("Treeview", background=self._tree_bg, fieldbackground=self._tree_bg, foreground=self._tree_fg)
+            style.configure("Treeview.Heading", background=self._entry_bg, foreground=self._tree_fg)
+        except Exception:
+            pass
+
         self.title(f"{APP_TITLE} — rclone mount UI")
         self.geometry("1100x700")
 
@@ -94,6 +107,22 @@ class EZMountApp(tk.Tk):
         self._load_startup_log()
         self.after(300, self.scan_for_external_mounts)
         self.after(1000, self._refresh_status_periodic)
+
+    def make_themed_text(self, parent, height=6, wrap=tk.NONE):
+        frame = ttk.Frame(parent)
+        text = tk.Text(frame, wrap=wrap, height=height, relief="flat", bd=0)
+
+        # ensure the text/bg follow theme we chose
+        try:
+            text.configure(bg=self._bg_text, fg=self._fg_text, insertbackground=self._fg_text)
+        except Exception:
+            pass
+
+        vs = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        return frame, text
 
     def _build_ui(self):
         pad = 8
@@ -122,7 +151,7 @@ class EZMountApp(tk.Tk):
         right.place(relx=0.30, rely=0.0, relwidth=0.70, relheight=1.0)
 
         ttk.Label(left, text="rclone.conf (read-only)", font=(None, 11, "bold")).pack(anchor="w")
-        conf_frame, self.txt_conf = make_themed_text(left, wrap=tk.NONE, height=20)
+        conf_frame, self.txt_conf = self.make_themed_text(left, wrap=tk.NONE, height=20)
         conf_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.txt_conf.configure(state="disabled")
 
@@ -150,6 +179,8 @@ class EZMountApp(tk.Tk):
         self.tree.column("drive", anchor="center", width=80, stretch=False)
         self.tree.column("startup", anchor="center", width=70, stretch=False)
 
+        # canvas used previously is not required for Treeview; still make sure any canvas (if added) uses _canvas_bg
+        # pack tree + scrollbar
         tree_vs = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_vs.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -158,7 +189,6 @@ class EZMountApp(tk.Tk):
         # actions panel placed in the second column of the grid; minsize enforced above
         actions_panel = ttk.Frame(tree_container, width=140)
         actions_panel.grid(row=0, column=1, sticky="ns", padx=(8,0))
-        # prevent children from resizing the actions_panel below minsize
         try:
             actions_panel.grid_propagate(False)
         except Exception:
@@ -184,7 +214,7 @@ class EZMountApp(tk.Tk):
         midb = ttk.Frame(bottom)
         midb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 8))
         ttk.Label(midb, text="Console (last messages)", font=(None, 11, "bold")).pack(anchor="w")
-        log_frame, self.txt_log = make_themed_text(midb, height=6)
+        log_frame, self.txt_log = self.make_themed_text(midb, height=6)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.txt_log.configure(state="disabled")
 
@@ -199,6 +229,7 @@ class EZMountApp(tk.Tk):
         self.lbl_startup.pack(anchor="w", pady=(6, 0))
         ttk.Button(rightb, text="Open startup folder", command=self.open_startup_folder).pack(side=tk.BOTTOM, pady=(6, 0))
 
+    # ---------- config load ----------
     def select_conf(self):
         p = filedialog.askopenfilename(title="Select rclone.conf", filetypes=[("conf", "*.conf"), ("All", "*.*")])
         if not p:
@@ -221,6 +252,7 @@ class EZMountApp(tk.Tk):
         self.auto_generate_mappings()
         self.scan_for_external_mounts()
 
+    # ---------- mappings (treeview) ----------
     def _new_iid(self):
         return str(uuid.uuid4())
 
@@ -376,6 +408,7 @@ class EZMountApp(tk.Tk):
         startup_ans = messagebox.askyesno("Startup", "Add to startup by default?")
         self.add_mapping_row(remote=remote.strip(), label=label.strip(), drive=drive.strip(), startup=startup_ans, select=True)
 
+    # ---------- mount (detached) ----------
     def mount_all(self):
         if not self.rclone_path:
             messagebox.showerror("Missing rclone", "rclone not found on PATH")
@@ -422,6 +455,7 @@ class EZMountApp(tk.Tk):
         except Exception as e:
             self._log(f"Failed to start detached mount {remote} -> {drive}: {e}")
             return
+
         mapping_text = f"{remote} -> {drive}"
         self.active_mounts.append({"mapping": mapping_text, "proc": proc, "started_at": time.time(), "detected": False})
         self._refresh_active_list()
@@ -434,6 +468,7 @@ class EZMountApp(tk.Tk):
             return Path(d[0:2] + "\\").exists()
         return Path(d).exists()
 
+    # ---------- unmount ----------
     def _unmount_single(self, drive):
         if not drive:
             messagebox.showinfo("No drive", "No drive specified")
@@ -534,6 +569,7 @@ class EZMountApp(tk.Tk):
                 except Exception as e:
                     messagebox.showwarning("Explorer", f"Failed to restart explorer: {e}")
 
+    # ---------- startup files (nircmd-aware) + startup log handling ----------
     def add_selected_to_startup(self):
         folder = ensure_startup_folder()
         if not folder:
@@ -698,6 +734,7 @@ class EZMountApp(tk.Tk):
                     self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": False})
                     self._log(f"Detected external mount (from mappings): {mapping_text}")
                 detected_now.append(mapping_text)
+
         for entry in self.startup_log:
             drive = entry.get("drive")
             remote = entry.get("remote") or ""
@@ -710,6 +747,7 @@ class EZMountApp(tk.Tk):
                     self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": True})
                     self._log(f"Detected external mount (from startup log): {mapping_text}")
                 detected_now.append(mapping_text)
+
         removed = []
         for am in list(self.active_mounts):
             if am.get("detected"):
