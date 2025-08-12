@@ -4,6 +4,9 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
 from pathlib import Path
 import subprocess, threading, shutil, os, time, shlex, json
 
+import sv_ttk
+import darkdetect
+
 APP_TITLE = "EZMount"
 STARTUP_PREFIX = "EZMount_"
 LOG_MAX_CHARS = 15000
@@ -55,7 +58,9 @@ def ensure_startup_folder():
 class EZMountApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"{APP_TITLE} — rclone UI")
+        theme = (darkdetect.theme() or "Light").lower()
+        sv_ttk.set_theme(theme)
+        self.title(f"{APP_TITLE} — rclone mount UI")
         self.geometry("1100x700")
 
         self.loaded_conf_path = None
@@ -704,4 +709,5 @@ class EZMountApp(tk.Tk):
 
 if __name__ == "__main__":
     app = EZMountApp()
+    
     app.mainloop()
