@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-EZMount — Background mounts (no terminal) + cleaner aligned UI
+EZMount — reliable 30% / 70% UI layout + background mounts + nircmd-aware startup scripts.
 
-Run: python ezmount_app.py
+Replace your ezmount_app.py with this file and run: python ezmount_app.py
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
@@ -20,7 +20,6 @@ LOG_MAX_CHARS = 15000
 
 
 def parse_conf_sections(conf_text: str):
-    """Return a dict of section name -> dict(key->value). Very lightweight parser."""
     sections = {}
     current = None
     for raw in conf_text.splitlines():
@@ -40,7 +39,6 @@ def parse_conf_sections(conf_text: str):
 
 
 def get_startup_folder():
-    """Return platform-appropriate startup/autostart folder (Path) or None."""
     if os.name == "nt":
         appdata = os.getenv("APPDATA")
         if not appdata:
@@ -67,8 +65,8 @@ class EZMountApp(tk.Tk):
         self.loaded_conf_text = ""
         self.conf_sections = {}
 
-        self.mappings = []  # each mapping: dict with widgets
-        self.active_mounts = []  # each: {'mapping', 'proc', 'started_at'}
+        self.mappings = []
+        self.active_mounts = []
 
         self.rclone_path = shutil.which("rclone")
 
@@ -77,14 +75,14 @@ class EZMountApp(tk.Tk):
 
     def _build_ui(self):
         pad = 8
+
+        # top toolbar
         toolbar = ttk.Frame(self, padding=(pad, pad // 2))
         toolbar.pack(fill=tk.X)
-
         ttk.Button(toolbar, text="Select rclone.conf", command=self.select_conf).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Auto-generate mappings", command=self.auto_generate_mappings).pack(side=tk.LEFT, padx=6)
         ttk.Button(toolbar, text="Add mapping", command=self.add_mapping_row).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Clear mappings", command=self.clear_mappings).pack(side=tk.LEFT, padx=6)
-
         ttk.Label(toolbar, text="    ").pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Mount All", command=self.mount_all).pack(side=tk.RIGHT)
         ttk.Button(toolbar, text="Unmount All", command=self.unmount_all).pack(side=tk.RIGHT, padx=6)
@@ -94,21 +92,27 @@ class EZMountApp(tk.Tk):
         self.lbl_rclone = ttk.Label(toolbar, text=f"rclone: {self.rclone_path or '(not found)'}")
         self.lbl_rclone.pack(side=tk.LEFT, padx=(12, 0))
 
-        # main panes
-        main = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        main.pack(fill=tk.BOTH, expand=True, padx=pad, pady=(0, pad))
+        # main container (grid) for reliable 30% / 70% split
+        main_container = ttk.Frame(self)
+        main_container.pack(fill=tk.BOTH, expand=True, padx=pad, pady=(0, pad))
 
-        # left: conf view
-        left = ttk.Frame(main, padding=pad)
-        main.add(left, weight=1)
+        # configure columns: use weights 3 and 7 to approximate 30/70
+        main_container.columnconfigure(0, weight=3)
+        main_container.columnconfigure(1, weight=7)
+        main_container.rowconfigure(0, weight=1)
+
+        # LEFT: readonly conf (30%)
+        left = ttk.Frame(main_container, padding=pad)
+        left.grid(row=0, column=0, sticky="nsew")
         ttk.Label(left, text="rclone.conf (read-only)", font=(None, 11, "bold")).pack(anchor="w")
-        self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE, height=25)
+        # set width so it doesn't hog horizontal space
+        self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE, height=30, width=60)
         self.txt_conf.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.txt_conf.configure(state=tk.DISABLED)
 
-        # right: mappings
-        right = ttk.Frame(main, padding=pad)
-        main.add(right, weight=1)
+        # RIGHT: mappings (70%)
+        right = ttk.Frame(main_container, padding=pad)
+        right.grid(row=0, column=1, sticky="nsew")
         ttk.Label(right, text="Mappings", font=(None, 11, "bold")).pack(anchor="w")
 
         header = ttk.Frame(right)
@@ -118,14 +122,13 @@ class EZMountApp(tk.Tk):
         header.columnconfigure(2, weight=1)
         header.columnconfigure(3, weight=1)
         header.columnconfigure(4, weight=0)
-
         ttk.Label(header, text="Remote[:path]").grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="Label").grid(row=0, column=1, sticky="w")
         ttk.Label(header, text="Drive / Mount").grid(row=0, column=2, sticky="w")
         ttk.Label(header, text="Startup").grid(row=0, column=3, sticky="w")
         ttk.Label(header, text="Actions").grid(row=0, column=4, sticky="w")
 
-        # scrollable mapping list
+        # scrollable mapping list inside right column
         map_wrap = ttk.Frame(right)
         map_wrap.pack(fill=tk.BOTH, expand=True)
         self.map_canvas = tk.Canvas(map_wrap, borderwidth=0, highlightthickness=0)
@@ -137,7 +140,7 @@ class EZMountApp(tk.Tk):
         self.map_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # bottom area: active mounts + logs + startup buttons
+        # bottom area: active mounts + logs + startup actions
         bottom = ttk.Frame(self, padding=pad)
         bottom.pack(fill=tk.BOTH)
 
@@ -178,10 +181,10 @@ class EZMountApp(tk.Tk):
         self.loaded_conf_text = text
         self.conf_sections = parse_conf_sections(text)
 
-        self.txt_conf.configure(state=tk.NORMAL)
+        self.txt_conf.configure(state="normal")
         self.txt_conf.delete("1.0", tk.END)
         self.txt_conf.insert(tk.END, text)
-        self.txt_conf.configure(state=tk.DISABLED)
+        self.txt_conf.configure(state="disabled")
 
         self.lbl_conf.config(text=Path(p).name)
         self.auto_generate_mappings()
@@ -250,7 +253,6 @@ class EZMountApp(tk.Tk):
 
     # ---------- auto-generate ----------
     def auto_generate_mappings(self):
-        # clear existing
         for m in list(self.mappings):
             m["frame"].destroy()
         self.mappings.clear()
@@ -312,7 +314,6 @@ class EZMountApp(tk.Tk):
         threading.Thread(target=self._start_detached_mount, args=(remote, drive), daemon=True).start()
 
     def _start_detached_mount(self, remote, drive):
-        # Ensure rclone path still present
         if not self.rclone_path:
             self._log("rclone not found; cannot mount.")
             return
@@ -321,14 +322,12 @@ class EZMountApp(tk.Tk):
         try:
             if os.name == "nt":
                 creation = 0
-                # set flags if available
                 if hasattr(subprocess, "CREATE_NO_WINDOW"):
                     creation |= subprocess.CREATE_NO_WINDOW
                 if hasattr(subprocess, "DETACHED_PROCESS"):
                     creation |= subprocess.DETACHED_PROCESS
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creation)
             else:
-                # POSIX: detach using new process group and discard IO
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setpgrp)
         except Exception as e:
             self._log(f"Failed to start detached mount {remote} -> {drive}: {e}")
@@ -348,7 +347,6 @@ class EZMountApp(tk.Tk):
 
     # ---------- unmount ----------
     def _unmount_single(self, drive):
-        # find active match
         for am in list(self.active_mounts):
             if am["mapping"].endswith(f"-> {drive}") or drive in am["mapping"]:
                 proc = am["proc"]
@@ -387,7 +385,6 @@ class EZMountApp(tk.Tk):
         self.active_mounts.clear()
         self._refresh_active_list()
         self._log("All mounts stopped")
-        # ask to restart explorer on windows
         if os.name == "nt":
             if messagebox.askyesno("Restart Explorer?", "Restart Windows Explorer to refresh drive letters?"):
                 try:
@@ -398,7 +395,7 @@ class EZMountApp(tk.Tk):
                 except Exception as e:
                     messagebox.showwarning("Explorer", f"Failed to restart explorer: {e}")
 
-    # ---------- startup files ----------
+    # ---------- startup files (nircmd-aware) ----------
     def add_selected_to_startup(self):
         folder = ensure_startup_folder()
         if not folder:
@@ -416,6 +413,13 @@ class EZMountApp(tk.Tk):
             return
         if not messagebox.askyesno("Create", f"Create {len(entries)} startup files in {folder}?"):
             return
+
+        nircmd_path = shutil.which("nircmd")
+        if not nircmd_path and self.rclone_path:
+            maybe = Path(self.rclone_path).parent / "nircmd.exe"
+            if maybe.exists():
+                nircmd_path = str(maybe)
+
         created = 0
         for remote, label, drive in entries:
             try:
@@ -423,8 +427,10 @@ class EZMountApp(tk.Tk):
                 if os.name == "nt":
                     fname = f"{STARTUP_PREFIX}{safe_label}.cmd"
                     fpath = folder / fname
-                    # use start to detach and minimize window
-                    cmdline = f'start "" /min "{self.rclone_path}" mount {shlex.quote(remote)} {shlex.quote(drive)} --config "{self.loaded_conf_path or ""}" --vfs-cache-mode writes'
+                    if nircmd_path:
+                        cmdline = f'"{nircmd_path}" exec hide "{self.rclone_path}" mount {shlex.quote(remote)} {shlex.quote(drive)} --config "{self.loaded_conf_path or ""}" --vfs-cache-mode writes --log-file "%TEMP%\\rclone_{safe_label}.log" --log-level INFO'
+                    else:
+                        cmdline = f'start "" /min "{self.rclone_path}" mount {shlex.quote(remote)} {shlex.quote(drive)} --config "{self.loaded_conf_path or ""}" --vfs-cache-mode writes --log-file "%TEMP%\\rclone_{safe_label}.log" --log-level INFO'
                     fpath.write_text(cmdline, encoding="utf-8")
                 else:
                     fname = f"{STARTUP_PREFIX}{safe_label}.desktop"
@@ -464,14 +470,14 @@ class EZMountApp(tk.Tk):
 
     # ---------- helpers ----------
     def _log(self, text):
-        self.txt_log.configure(state=tk.NORMAL)
+        self.txt_log.configure(state="normal")
         self.txt_log.insert("end", text + "\n")
         txt = self.txt_log.get("1.0", "end")
         if len(txt) > LOG_MAX_CHARS:
             self.txt_log.delete("1.0", "end")
             self.txt_log.insert("end", txt[-LOG_MAX_CHARS:])
         self.txt_log.see("end")
-        self.txt_log.configure(state=tk.DISABLED)
+        self.txt_log.configure(state="disabled")
 
     def _refresh_active_list(self):
         self.lst_active.delete(0, "end")
