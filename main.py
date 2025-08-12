@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 import subprocess, threading, shutil, os, time, shlex, json
+import uuid
 
 import sv_ttk
 import darkdetect
@@ -55,6 +56,22 @@ def ensure_startup_folder():
         p.mkdir(parents=True, exist_ok=True)
     return p
 
+def make_themed_text(parent, height=6, wrap=tk.NONE):
+    frame = ttk.Frame(parent)
+    text = tk.Text(frame, wrap=wrap, height=height, relief="flat", bd=0)
+    vs = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+    text.configure(yscrollcommand=vs.set)
+    style = ttk.Style()
+    bg = style.lookup("TEntry", "fieldbackground") or style.lookup("TLabel", "background") or "#1c1c1c"
+    fg = style.lookup("TLabel", "foreground") or "#ffffff"
+    try:
+        text.configure(bg=bg, fg=fg, insertbackground=fg)
+    except Exception:
+        pass
+    vs.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
+    return frame, text
+
 class EZMountApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -85,7 +102,7 @@ class EZMountApp(tk.Tk):
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="Select rclone.conf", command=self.select_conf).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Auto-generate mappings", command=self.auto_generate_mappings).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="Add mapping", command=self.add_mapping_row).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="Add mapping", command=self.show_add_mapping_dialog).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Clear mappings", command=self.clear_mappings).pack(side=tk.LEFT, padx=6)
         ttk.Label(toolbar, text="    ").pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Mount All", command=self.mount_all).pack(side=tk.RIGHT)
@@ -105,40 +122,55 @@ class EZMountApp(tk.Tk):
         right.place(relx=0.30, rely=0.0, relwidth=0.70, relheight=1.0)
 
         ttk.Label(left, text="rclone.conf (read-only)", font=(None, 11, "bold")).pack(anchor="w")
-        self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE)
-        self.txt_conf.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-        self.txt_conf.configure(state=tk.DISABLED)
+        conf_frame, self.txt_conf = make_themed_text(left, wrap=tk.NONE, height=20)
+        conf_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.txt_conf.configure(state="disabled")
 
         ttk.Label(right, text="Mappings", font=(None, 11, "bold")).pack(anchor="w")
-        header = ttk.Frame(right)
-        header.pack(fill=tk.X, pady=(6, 4))
-        header.columnconfigure(0, weight=4)
-        header.columnconfigure(1, weight=2)
-        header.columnconfigure(2, weight=1)
-        header.columnconfigure(3, weight=1)
-        header.columnconfigure(4, weight=0)
-        ttk.Label(header, text="Remote[:path]").grid(row=0, column=0, sticky="w", padx=4)
-        ttk.Label(header, text="Label").grid(row=0, column=1, sticky="w", padx=4)
-        ttk.Label(header, text="Drive / Mount").grid(row=0, column=2, sticky="w", padx=4)
-        ttk.Label(header, text="Startup").grid(row=0, column=3, sticky="w", padx=4)
-        ttk.Label(header, text="Actions").grid(row=0, column=4, sticky="w", padx=4)
 
-        map_wrap = ttk.Frame(right)
-        map_wrap.pack(fill=tk.BOTH, expand=True)
-        self.map_canvas = tk.Canvas(map_wrap, borderwidth=0, highlightthickness=0)
-        vsb = ttk.Scrollbar(map_wrap, orient="vertical", command=self.map_canvas.yview)
-        self.map_inner = ttk.Frame(self.map_canvas)
-        self.map_inner.bind("<Configure>", lambda e: self.map_canvas.configure(scrollregion=self.map_canvas.bbox("all")))
-        self.map_window = self.map_canvas.create_window((0, 0), window=self.map_inner, anchor="nw")
-        self.map_canvas.bind("<Configure>", lambda e: self.map_canvas.itemconfig(self.map_window, width=e.width))
-        self.map_inner.columnconfigure(0, weight=4)
-        self.map_inner.columnconfigure(1, weight=2)
-        self.map_inner.columnconfigure(2, weight=1)
-        self.map_inner.columnconfigure(3, weight=1)
-        self.map_inner.columnconfigure(4, weight=0)
-        self.map_canvas.configure(yscrollcommand=vsb.set)
-        self.map_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        # Treeview area with grid-based container so actions panel keeps a minimum width
+        tree_container = ttk.Frame(right)
+        tree_container.pack(fill=tk.BOTH, expand=True)
+
+        tree_container.rowconfigure(0, weight=1)
+        tree_container.columnconfigure(0, weight=1)
+        tree_container.columnconfigure(1, weight=0, minsize=140)
+
+        tree_frame = ttk.Frame(tree_container)
+        tree_frame.grid(row=0, column=0, sticky="nsew")
+
+        columns = ("remote", "label", "drive", "startup")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree.heading("remote", text="Remote[:path]")
+        self.tree.heading("label", text="Label")
+        self.tree.heading("drive", text="Drive / Mount")
+        self.tree.heading("startup", text="Startup")
+        self.tree.column("remote", anchor="w", width=360, stretch=True)
+        self.tree.column("label", anchor="w", width=200, stretch=True)
+        self.tree.column("drive", anchor="center", width=80, stretch=False)
+        self.tree.column("startup", anchor="center", width=70, stretch=False)
+
+        tree_vs = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_vs.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_vs.pack(side="right", fill="y")
+
+        # actions panel placed in the second column of the grid; minsize enforced above
+        actions_panel = ttk.Frame(tree_container, width=140)
+        actions_panel.grid(row=0, column=1, sticky="ns", padx=(8,0))
+        # prevent children from resizing the actions_panel below minsize
+        try:
+            actions_panel.grid_propagate(False)
+        except Exception:
+            pass
+
+        ttk.Button(actions_panel, text="Mount", command=self.action_mount_selected).pack(fill="x", pady=(0,6))
+        ttk.Button(actions_panel, text="Unmount", command=self.action_unmount_selected).pack(fill="x", pady=(0,6))
+        ttk.Button(actions_panel, text="Toggle Startup", command=self.action_toggle_startup).pack(fill="x", pady=(0,6))
+        ttk.Button(actions_panel, text="Remove", command=self.action_remove_selected).pack(fill="x", pady=(0,6))
+        ttk.Button(actions_panel, text="Add...", command=self.show_add_mapping_dialog).pack(fill="x", pady=(0,6))
+
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
 
         bottom = ttk.Frame(self, padding=pad)
         bottom.pack(fill=tk.BOTH)
@@ -152,9 +184,9 @@ class EZMountApp(tk.Tk):
         midb = ttk.Frame(bottom)
         midb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 8))
         ttk.Label(midb, text="Console (last messages)", font=(None, 11, "bold")).pack(anchor="w")
-        self.txt_log = scrolledtext.ScrolledText(midb, height=6)
-        self.txt_log.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-        self.txt_log.configure(state=tk.DISABLED)
+        log_frame, self.txt_log = make_themed_text(midb, height=6)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.txt_log.configure(state="disabled")
 
         rightb = ttk.Frame(bottom)
         rightb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -189,145 +221,52 @@ class EZMountApp(tk.Tk):
         self.auto_generate_mappings()
         self.scan_for_external_mounts()
 
-    def add_mapping_row(self, remote="new-remote:", label=None, drive="X:", startup=False):
+    def _new_iid(self):
+        return str(uuid.uuid4())
+
+    def add_mapping_row(self, remote="new-remote:", label=None, drive="X:", startup=False, select=False):
         if label is None:
             label = remote
-        idx = len(self.mappings)
-        ent_remote = ttk.Entry(self.map_inner)
-        ent_remote.insert(0, remote)
-        ent_remote.grid(row=idx, column=0, sticky="ew", padx=4, pady=2)
+        iid = self._new_iid()
+        m = {"id": iid, "remote": remote, "label": label, "drive": drive, "startup": bool(startup)}
+        self.mappings.append(m)
+        startup_text = "Yes" if m["startup"] else ""
+        self.tree.insert("", "end", iid, values=(m["remote"], m["label"], m["drive"], startup_text))
+        if select:
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
 
-        ent_label = ttk.Entry(self.map_inner)
-        ent_label.insert(0, label)
-        ent_label.grid(row=idx, column=1, sticky="ew", padx=4, pady=2)
+    def _find_mapping_by_iid(self, iid):
+        for m in self.mappings:
+            if m["id"] == iid:
+                return m
+        return None
 
-        ent_drive = ttk.Entry(self.map_inner, width=12)
-        ent_drive.insert(0, drive)
-        ent_drive.grid(row=idx, column=2, sticky="ew", padx=4, pady=2)
-
-        var_startup = tk.BooleanVar(value=startup)
-        chk = ttk.Checkbutton(self.map_inner, variable=var_startup)
-        chk.grid(row=idx, column=3, sticky="w", padx=8, pady=2)
-
-        act_frame = ttk.Frame(self.map_inner)
-        act_frame.grid(row=idx, column=4, sticky="e", padx=4, pady=2)
-        ttk.Button(act_frame, text="Mount", command=lambda r=ent_remote, d=ent_drive: self._mount_single(r.get().strip(), d.get().strip())).pack(side=tk.LEFT)
-        ttk.Button(act_frame, text="Unmount", command=lambda d=ent_drive: self._unmount_single(d.get().strip())).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(act_frame, text="Remove", command=lambda er=ent_remote: self._remove_mapping_by_widget(er)).pack(side=tk.LEFT, padx=(6, 0))
-
-        self.mappings.append(
-            {
-                "remote_widget": ent_remote,
-                "label_widget": ent_label,
-                "drive_widget": ent_drive,
-                "startup_var": var_startup,
-                "chk_widget": chk,
-                "act_frame": act_frame,
-            }
-        )
-
-    def _remove_mapping_by_widget(self, remote_widget):
-        for i, m in enumerate(list(self.mappings)):
-            if m["remote_widget"] == remote_widget:
-                try:
-                    m["remote_widget"].destroy()
-                except Exception:
-                    pass
-                try:
-                    m["label_widget"].destroy()
-                except Exception:
-                    pass
-                try:
-                    m["drive_widget"].destroy()
-                except Exception:
-                    pass
-                try:
-                    m["chk_widget"].destroy()
-                except Exception:
-                    pass
-                try:
-                    m["act_frame"].destroy()
-                except Exception:
-                    pass
-                self.mappings.pop(i)
-                break
-        for idx, mm in enumerate(self.mappings):
+    def _remove_mapping_by_iid(self, iid):
+        m = self._find_mapping_by_iid(iid)
+        if m:
             try:
-                mm["remote_widget"].grid_configure(row=idx)
+                self.mappings.remove(m)
             except Exception:
                 pass
-            try:
-                mm["label_widget"].grid_configure(row=idx)
-            except Exception:
-                pass
-            try:
-                mm["drive_widget"].grid_configure(row=idx)
-            except Exception:
-                pass
-            try:
-                mm["chk_widget"].grid_configure(row=idx)
-            except Exception:
-                pass
-            try:
-                mm["act_frame"].grid_configure(row=idx)
-            except Exception:
-                pass
+        try:
+            self.tree.delete(iid)
+        except Exception:
+            pass
 
     def clear_mappings(self):
         if not self.mappings:
             return
         if not messagebox.askyesno("Clear mappings", "Clear all mappings?"):
             return
-        for m in list(self.mappings):
-            try:
-                m["remote_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["label_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["drive_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["chk_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["act_frame"].destroy()
-            except Exception:
-                pass
         self.mappings.clear()
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
 
     def auto_generate_mappings(self):
-        for m in list(self.mappings):
-            try:
-                m["remote_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["label_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["drive_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["chk_widget"].destroy()
-            except Exception:
-                pass
-            try:
-                m["act_frame"].destroy()
-            except Exception:
-                pass
-        self.mappings.clear()
-
+        self.clear_mappings()
         if not self.conf_sections:
             return
-
         drive_ord = ord("X")
         for section, kv in self.conf_sections.items():
             type_val = kv.get("type", "").lower()
@@ -353,14 +292,98 @@ class EZMountApp(tk.Tk):
             ord_val = ord("Z")
         return ord_val
 
+    def _on_tree_double_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        row = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        if not row or not column:
+            return
+        col_index = int(column.replace("#", "")) - 1
+        col_key = ("remote", "label", "drive", "startup")[col_index]
+        bbox = self.tree.bbox(row, column)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        edit_value = self.tree.set(row, column)
+        entry = ttk.Entry(self.tree)
+        entry.insert(0, edit_value)
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.focus_set()
+        def commit(event=None):
+            new = entry.get().strip()
+            entry.destroy()
+            if col_key == "startup":
+                new_bool = bool(new and new.lower() not in ("", "no", "false", "0"))
+                m = self._find_mapping_by_iid(row)
+                if m:
+                    m["startup"] = new_bool
+                    self.tree.set(row, column, "Yes" if new_bool else "")
+            else:
+                self.tree.set(row, column, new)
+                m = self._find_mapping_by_iid(row)
+                if m:
+                    m[col_key] = new
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+
+    def _get_selected_mapping(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None, None
+        iid = sel[0]
+        m = self._find_mapping_by_iid(iid)
+        return iid, m
+
+    def action_mount_selected(self):
+        iid, m = self._get_selected_mapping()
+        if not m:
+            messagebox.showinfo("Select", "Select a mapping first")
+            return
+        self._mount_single(m["remote"], m["drive"])
+
+    def action_unmount_selected(self):
+        iid, m = self._get_selected_mapping()
+        if not m:
+            messagebox.showinfo("Select", "Select a mapping first")
+            return
+        self._unmount_single(m["drive"])
+
+    def action_toggle_startup(self):
+        iid, m = self._get_selected_mapping()
+        if not m:
+            messagebox.showinfo("Select", "Select a mapping first")
+            return
+        m["startup"] = not m["startup"]
+        self.tree.set(iid, "startup", "Yes" if m["startup"] else "")
+
+    def action_remove_selected(self):
+        iid, m = self._get_selected_mapping()
+        if not m:
+            messagebox.showinfo("Select", "Select a mapping first")
+            return
+        if not messagebox.askyesno("Remove", f"Remove mapping '{m['label']}'?"):
+            return
+        self._remove_mapping_by_iid(iid)
+
+    def show_add_mapping_dialog(self):
+        remote = simpledialog.askstring("Remote", "Remote (eg. remote:bucket):", parent=self)
+        if remote is None:
+            return
+        label = simpledialog.askstring("Label", "Label (optional):", parent=self) or remote
+        drive = simpledialog.askstring("Drive", "Drive (eg. X: or /mnt/point):", parent=self) or "X:"
+        startup_ans = messagebox.askyesno("Startup", "Add to startup by default?")
+        self.add_mapping_row(remote=remote.strip(), label=label.strip(), drive=drive.strip(), startup=startup_ans, select=True)
+
     def mount_all(self):
         if not self.rclone_path:
             messagebox.showerror("Missing rclone", "rclone not found on PATH")
             return
         to_mount = []
         for m in self.mappings:
-            r = m["remote_widget"].get().strip()
-            d = m["drive_widget"].get().strip()
+            r = m["remote"].strip()
+            d = m["drive"].strip()
             if not r:
                 continue
             if self._is_drive_in_use(d):
@@ -399,7 +422,6 @@ class EZMountApp(tk.Tk):
         except Exception as e:
             self._log(f"Failed to start detached mount {remote} -> {drive}: {e}")
             return
-
         mapping_text = f"{remote} -> {drive}"
         self.active_mounts.append({"mapping": mapping_text, "proc": proc, "started_at": time.time(), "detected": False})
         self._refresh_active_list()
@@ -519,19 +541,15 @@ class EZMountApp(tk.Tk):
             return
         entries = []
         for m in self.mappings:
-            try:
-                if m["startup_var"].get():
-                    entries.append((m["remote_widget"].get().strip(), m["label_widget"].get().strip(), m["drive_widget"].get().strip()))
-            except Exception:
-                pass
+            if m.get("startup"):
+                entries.append((m["remote"], m["label"], m["drive"]))
         if not entries:
-            messagebox.showinfo("No entries", "No mappings selected")
+            messagebox.showinfo("No entries", "No mappings selected for startup")
             return
         if not messagebox.askyesno("Create", f"Create {len(entries)} startup files in {folder}?"):
             return
 
         log_entries = []
-
         nircmd_path = shutil.which("nircmd")
         if not nircmd_path and self.rclone_path:
             maybe = Path(self.rclone_path).parent / "nircmd.exe"
@@ -633,14 +651,17 @@ class EZMountApp(tk.Tk):
             self.startup_log = []
 
     def _log(self, text):
-        self.txt_log.configure(state="normal")
-        self.txt_log.insert("end", text + "\n")
-        txt = self.txt_log.get("1.0", "end")
-        if len(txt) > LOG_MAX_CHARS:
-            self.txt_log.delete("1.0", "end")
-            self.txt_log.insert("end", txt[-LOG_MAX_CHARS:])
-        self.txt_log.see("end")
-        self.txt_log.configure(state="disabled")
+        try:
+            self.txt_log.configure(state="normal")
+            self.txt_log.insert("end", text + "\n")
+            txt = self.txt_log.get("1.0", "end")
+            if len(txt) > LOG_MAX_CHARS:
+                self.txt_log.delete("1.0", "end")
+                self.txt_log.insert("end", txt[-LOG_MAX_CHARS:])
+            self.txt_log.see("end")
+            self.txt_log.configure(state="disabled")
+        except Exception:
+            pass
 
     def _refresh_active_list(self):
         self.lst_active.delete(0, "end")
@@ -668,19 +689,15 @@ class EZMountApp(tk.Tk):
     def scan_for_external_mounts(self):
         detected_now = []
         for m in self.mappings:
-            try:
-                d = m["drive_widget"].get().strip()
-            except Exception:
-                continue
+            d = m.get("drive", "").strip()
             if not d:
                 continue
             if self._is_drive_in_use(d):
-                mapping_text = f"{m['remote_widget'].get().strip()} -> {d}"
+                mapping_text = f"{m.get('remote','').strip()} -> {d}"
                 if not any(am["mapping"] == mapping_text for am in self.active_mounts):
                     self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": False})
                     self._log(f"Detected external mount (from mappings): {mapping_text}")
                 detected_now.append(mapping_text)
-
         for entry in self.startup_log:
             drive = entry.get("drive")
             remote = entry.get("remote") or ""
@@ -693,7 +710,6 @@ class EZMountApp(tk.Tk):
                     self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": True})
                     self._log(f"Detected external mount (from startup log): {mapping_text}")
                 detected_now.append(mapping_text)
-
         removed = []
         for am in list(self.active_mounts):
             if am.get("detected"):
@@ -709,5 +725,4 @@ class EZMountApp(tk.Tk):
 
 if __name__ == "__main__":
     app = EZMountApp()
-    
     app.mainloop()
