@@ -9,6 +9,16 @@ import webbrowser
 import sv_ttk
 import darkdetect
 
+import subprocess, threading, shutil, os, time, shlex, json, uuid, webbrowser, sys
+
+def resource_path(rel):
+    """
+    Return absolute path to a resource, works in dev and when PyInstaller bundles to _MEIPASS.
+    """
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, rel)
+
+
 APP_TITLE = "EZMount"
 STARTUP_PREFIX = "EZMount_"
 LOG_MAX_CHARS = 15000
@@ -61,11 +71,24 @@ class EZMountApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        # pick theme from system (darkdetect), default to light if unknown
         theme = (darkdetect.theme() or "Light").lower()
         sv_ttk.set_theme(theme)
 
-        # now read back active theme and set safe color tokens for native widgets
+        try:
+            ico = resource_path("app.ico")
+            if os.path.exists(ico):
+                self.iconbitmap(ico)
+        except Exception:
+            pass
+
+        try:
+            png = resource_path("app.png")
+            if os.path.exists(png):
+                img = tk.PhotoImage(file=png)
+                self.iconphoto(True, img)
+        except Exception:
+            pass
+
         active_theme = sv_ttk.get_theme() or theme
         style = ttk.Style()
 
@@ -84,7 +107,6 @@ class EZMountApp(tk.Tk):
             self._canvas_bg = "#ffffff"
             self._entry_bg = "#ffffff"
 
-        # configure Treeview colors explicitly so headers + rows follow theme
         try:
             style.configure("Treeview", background=self._tree_bg, fieldbackground=self._tree_bg, foreground=self._tree_fg)
             style.configure("Treeview.Heading", background=self._entry_bg, foreground=self._tree_fg)
@@ -113,7 +135,6 @@ class EZMountApp(tk.Tk):
         frame = ttk.Frame(parent)
         text = tk.Text(frame, wrap=wrap, height=height, relief="flat", bd=0)
 
-        # ensure the text/bg follow theme we chose
         try:
             text.configure(bg=self._bg_text, fg=self._fg_text, insertbackground=self._fg_text)
         except Exception:
@@ -158,7 +179,6 @@ class EZMountApp(tk.Tk):
 
         ttk.Label(right, text="Mappings", font=(None, 11, "bold")).pack(anchor="w")
 
-        # Treeview area with grid-based container so actions panel keeps a minimum width
         tree_container = ttk.Frame(right)
         tree_container.pack(fill=tk.BOTH, expand=True)
 
@@ -180,14 +200,11 @@ class EZMountApp(tk.Tk):
         self.tree.column("drive", anchor="center", width=80, stretch=False)
         self.tree.column("startup", anchor="center", width=70, stretch=False)
 
-        # canvas used previously is not required for Treeview; still make sure any canvas (if added) uses _canvas_bg
-        # pack tree + scrollbar
         tree_vs = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_vs.set)
         self.tree.pack(side="left", fill="both", expand=True)
         tree_vs.pack(side="right", fill="y")
 
-        # actions panel placed in the second column of the grid; minsize enforced above
         actions_panel = ttk.Frame(tree_container, width=140)
         actions_panel.grid(row=0, column=1, sticky="ns", padx=(8,0))
         try:
