@@ -77,7 +77,8 @@ class EZMountApp(tk.Tk):
         try:
             ico = resource_path("app.ico")
             if os.path.exists(ico):
-                self.iconbitmap(ico)
+                # self.iconbitmap(ico)
+                pass
         except Exception:
             pass
 
@@ -85,7 +86,8 @@ class EZMountApp(tk.Tk):
             png = resource_path("app.png")
             if os.path.exists(png):
                 img = tk.PhotoImage(file=png)
-                self.iconphoto(True, img)
+                pass
+                # self.iconphoto(True, img)
         except Exception:
             pass
 
