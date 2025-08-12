@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """
-EZMount — reliable 30% / 70% UI layout + background mounts + nircmd-aware startup scripts.
-
+EZMount — detects startup-created mounts using a startup log + strict 30%/70% conf layout.
 Replace your ezmount_app.py with this file and run: python ezmount_app.py
 """
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, scrolledtext
 from pathlib import Path
-import subprocess
-import threading
-import shutil
-import os
-import time
-import shlex
+import subprocess, threading, shutil, os, time, shlex, json
 
 APP_TITLE = "EZMount"
 STARTUP_PREFIX = "EZMount_"
 LOG_MAX_CHARS = 15000
-
 
 def parse_conf_sections(conf_text: str):
     sections = {}
@@ -37,7 +30,6 @@ def parse_conf_sections(conf_text: str):
             sections[current][k.strip()] = v.strip()
     return sections
 
-
 def get_startup_folder():
     if os.name == "nt":
         appdata = os.getenv("APPDATA")
@@ -47,13 +39,22 @@ def get_startup_folder():
     else:
         return Path.home() / ".config" / "autostart"
 
+def get_app_dir():
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA") or str(Path.home())
+        p = Path(appdata) / "EZMount"
+    else:
+        p = Path.home() / ".config" / "ezmount"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+STARTUP_LOG_PATH = get_app_dir() / "startup_log.json"
 
 def ensure_startup_folder():
     p = get_startup_folder()
     if p:
         p.mkdir(parents=True, exist_ok=True)
     return p
-
 
 class EZMountApp(tk.Tk):
     def __init__(self):
@@ -66,17 +67,21 @@ class EZMountApp(tk.Tk):
         self.conf_sections = {}
 
         self.mappings = []
+        # active_mounts items: {"mapping": str, "proc": Popen|None, "started_at": ts, "detected": bool, "from_startup_log": bool}
         self.active_mounts = []
 
         self.rclone_path = shutil.which("rclone")
+        self.startup_log = []  # loaded from STARTUP_LOG_PATH
 
         self._build_ui()
+        self._load_startup_log()
+        # initial detection a short time after UI shows
+        self.after(300, self.scan_for_external_mounts)
         self.after(1000, self._refresh_status_periodic)
 
     def _build_ui(self):
         pad = 8
 
-        # top toolbar
         toolbar = ttk.Frame(self, padding=(pad, pad // 2))
         toolbar.pack(fill=tk.X)
         ttk.Button(toolbar, text="Select rclone.conf", command=self.select_conf).pack(side=tk.LEFT)
@@ -92,29 +97,24 @@ class EZMountApp(tk.Tk):
         self.lbl_rclone = ttk.Label(toolbar, text=f"rclone: {self.rclone_path or '(not found)'}")
         self.lbl_rclone.pack(side=tk.LEFT, padx=(12, 0))
 
-        # main container (grid) for reliable 30% / 70% split
-        main_container = ttk.Frame(self)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=pad, pady=(0, pad))
+        # MAIN: use place() with relwidth to enforce strict 30% / 70%
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=pad, pady=(0, pad))
 
-        # configure columns: use weights 3 and 7 to approximate 30/70
-        main_container.columnconfigure(0, weight=3)
-        main_container.columnconfigure(1, weight=7)
-        main_container.rowconfigure(0, weight=1)
+        left = ttk.Frame(main_frame, padding=pad)
+        right = ttk.Frame(main_frame, padding=pad)
+        # strict 30/70 via place relwidth
+        left.place(relx=0.0, rely=0.0, relwidth=0.30, relheight=1.0)
+        right.place(relx=0.30, rely=0.0, relwidth=0.70, relheight=1.0)
 
-        # LEFT: readonly conf (30%)
-        left = ttk.Frame(main_container, padding=pad)
-        left.grid(row=0, column=0, sticky="nsew")
+        # LEFT conf pane (30%)
         ttk.Label(left, text="rclone.conf (read-only)", font=(None, 11, "bold")).pack(anchor="w")
-        # set width so it doesn't hog horizontal space
-        self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE, height=30, width=60)
+        self.txt_conf = scrolledtext.ScrolledText(left, wrap=tk.NONE)
         self.txt_conf.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self.txt_conf.configure(state=tk.DISABLED)
 
-        # RIGHT: mappings (70%)
-        right = ttk.Frame(main_container, padding=pad)
-        right.grid(row=0, column=1, sticky="nsew")
+        # RIGHT mappings (70%)
         ttk.Label(right, text="Mappings", font=(None, 11, "bold")).pack(anchor="w")
-
         header = ttk.Frame(right)
         header.pack(fill=tk.X, pady=(6, 4))
         header.columnconfigure(0, weight=4)
@@ -128,7 +128,6 @@ class EZMountApp(tk.Tk):
         ttk.Label(header, text="Startup").grid(row=0, column=3, sticky="w")
         ttk.Label(header, text="Actions").grid(row=0, column=4, sticky="w")
 
-        # scrollable mapping list inside right column
         map_wrap = ttk.Frame(right)
         map_wrap.pack(fill=tk.BOTH, expand=True)
         self.map_canvas = tk.Canvas(map_wrap, borderwidth=0, highlightthickness=0)
@@ -140,7 +139,7 @@ class EZMountApp(tk.Tk):
         self.map_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # bottom area: active mounts + logs + startup actions
+        # bottom area
         bottom = ttk.Frame(self, padding=pad)
         bottom.pack(fill=tk.BOTH)
 
@@ -164,6 +163,7 @@ class EZMountApp(tk.Tk):
         sp.pack(fill=tk.X, pady=(6, 0))
         ttk.Button(sp, text="Add selected to startup", command=self.add_selected_to_startup).pack(side=tk.LEFT)
         ttk.Button(sp, text="Clear EZMount startups", command=self.clear_startups).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(sp, text="Open startup folder", command=self.open_startup_folder).pack(side=tk.LEFT, padx=(6, 0))
         self.lbl_startup = ttk.Label(rightb, text="Startup folder: " + str(get_startup_folder()))
         self.lbl_startup.pack(anchor="w", pady=(6, 0))
 
@@ -188,6 +188,8 @@ class EZMountApp(tk.Tk):
 
         self.lbl_conf.config(text=Path(p).name)
         self.auto_generate_mappings()
+        # after generating mappings check startup_log and existing drives
+        self.scan_for_external_mounts()
 
     # ---------- mappings UI ----------
     def add_mapping_row(self, remote="new-remote:", label=None, drive="X:", startup=False):
@@ -334,7 +336,7 @@ class EZMountApp(tk.Tk):
             return
 
         mapping_text = f"{remote} -> {drive}"
-        self.active_mounts.append({"mapping": mapping_text, "proc": proc, "started_at": time.time()})
+        self.active_mounts.append({"mapping": mapping_text, "proc": proc, "started_at": time.time(), "detected": False})
         self._refresh_active_list()
         self._log(f"Mounted (detached): {mapping_text} (pid={proc.pid})")
 
@@ -347,24 +349,58 @@ class EZMountApp(tk.Tk):
 
     # ---------- unmount ----------
     def _unmount_single(self, drive):
+        if not drive:
+            messagebox.showinfo("No drive", "No drive specified")
+            return
+        found = False
         for am in list(self.active_mounts):
             if am["mapping"].endswith(f"-> {drive}") or drive in am["mapping"]:
-                proc = am["proc"]
-                try:
-                    proc.terminate()
+                found = True
+                proc = am.get("proc")
+                if proc:
                     try:
-                        proc.wait(timeout=3)
-                    except Exception:
-                        proc.kill()
-                except Exception as e:
-                    self._log(f"Error stopping pid {getattr(proc, 'pid', None)}: {e}")
-                try:
-                    self.active_mounts.remove(am)
-                except ValueError:
-                    pass
-                self._refresh_active_list()
-                self._log(f"Stopped mount {am['mapping']}")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except Exception:
+                            proc.kill()
+                    except Exception as e:
+                        self._log(f"Error stopping pid {getattr(proc, 'pid', None)}: {e}")
+                    try:
+                        self.active_mounts.remove(am)
+                    except ValueError:
+                        pass
+                    self._refresh_active_list()
+                    self._log(f"Stopped mount {am['mapping']}")
+                else:
+                    do_it = messagebox.askyesno("External mount", f"This mount ({am['mapping']}) wasn't started by EZMount.\nTry to unmount/stop it anyway?")
+                    if not do_it:
+                        return
+                    self._log(f"Attempting to unmount external mount: {am['mapping']}")
+                    if os.name == "nt":
+                        try:
+                            subprocess.run(["taskkill", "/f", "/im", "rclone.exe"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            self._log("Requested taskkill for rclone.exe (Windows).")
+                        except Exception as e:
+                            self._log(f"Failed to taskkill rclone.exe: {e}")
+                    else:
+                        try:
+                            subprocess.run(["fusermount", "-u", drive], check=False)
+                            self._log(f"Ran fusermount -u {drive}")
+                        except Exception:
+                            try:
+                                subprocess.run(["umount", drive], check=False)
+                                self._log(f"Ran umount {drive}")
+                            except Exception as e:
+                                self._log(f"Failed to unmount {drive}: {e}")
+                    try:
+                        self.active_mounts.remove(am)
+                    except ValueError:
+                        pass
+                    self._refresh_active_list()
                 break
+        if not found:
+            messagebox.showinfo("Not found", f"No active mount matching {drive}")
 
     def unmount_all(self):
         if not self.active_mounts:
@@ -374,14 +410,31 @@ class EZMountApp(tk.Tk):
             return
         for am in list(self.active_mounts):
             try:
-                proc = am["proc"]
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3)
-                except Exception:
-                    proc.kill()
+                proc = am.get("proc")
+                if proc:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        proc.kill()
+                else:
+                    if os.name == "nt":
+                        try:
+                            subprocess.run(["taskkill", "/f", "/im", "rclone.exe"], check=False)
+                            self._log("Requested taskkill for rclone.exe (Windows).")
+                        except Exception as e:
+                            self._log(f"Error stopping external rclone processes: {e}")
+                    else:
+                        drive = am["mapping"].split("->")[-1].strip()
+                        try:
+                            subprocess.run(["fusermount", "-u", drive], check=False)
+                        except Exception:
+                            try:
+                                subprocess.run(["umount", drive], check=False)
+                            except Exception as e:
+                                self._log(f"Failed to unmount {drive}: {e}")
             except Exception as e:
-                self._log(f"Error stopping pid {getattr(proc, 'pid', None)}: {e}")
+                self._log(f"Error stopping pid {getattr(am.get('proc'), 'pid', None)}: {e}")
         self.active_mounts.clear()
         self._refresh_active_list()
         self._log("All mounts stopped")
@@ -395,7 +448,7 @@ class EZMountApp(tk.Tk):
                 except Exception as e:
                     messagebox.showwarning("Explorer", f"Failed to restart explorer: {e}")
 
-    # ---------- startup files (nircmd-aware) ----------
+    # ---------- startup files (nircmd-aware) + startup log handling ----------
     def add_selected_to_startup(self):
         folder = ensure_startup_folder()
         if not folder:
@@ -413,6 +466,9 @@ class EZMountApp(tk.Tk):
             return
         if not messagebox.askyesno("Create", f"Create {len(entries)} startup files in {folder}?"):
             return
+
+        # reset log first (overwrite)
+        log_entries = []
 
         nircmd_path = shutil.which("nircmd")
         if not nircmd_path and self.rclone_path:
@@ -444,8 +500,26 @@ class EZMountApp(tk.Tk):
                     )
                     fpath.write_text(content, encoding="utf-8")
                 created += 1
+                # append to log entries
+                log_entries.append({
+                    "label": safe_label,
+                    "remote": remote,
+                    "drive": drive,
+                    "filename": str(fpath),
+                    "created_at": int(time.time()),
+                    "cmdline": cmdline if 'cmdline' in locals() else ""
+                })
             except Exception as e:
                 self._log(f"Failed to create startup for {remote}: {e}")
+
+        # overwrite startup log (reset then write new)
+        try:
+            STARTUP_LOG_PATH.write_text(json.dumps(log_entries, indent=2), encoding="utf-8")
+            self.startup_log = log_entries
+            self._log(f"Wrote startup log with {len(log_entries)} entries to {STARTUP_LOG_PATH}")
+        except Exception as e:
+            self._log(f"Failed to write startup log: {e}")
+
         messagebox.showinfo("Created", f"Created {created} startup files in {folder}")
 
     def clear_startups(self):
@@ -466,7 +540,38 @@ class EZMountApp(tk.Tk):
                 removed += 1
             except Exception as e:
                 self._log(f"Failed to remove {p}: {e}")
-        messagebox.showinfo("Removed", f"Removed {removed} files")
+        # also clear startup log
+        try:
+            if STARTUP_LOG_PATH.exists():
+                STARTUP_LOG_PATH.unlink()
+                self.startup_log = []
+        except Exception:
+            pass
+        messagebox.showinfo("Removed", f"Removed {removed} files and cleared startup log")
+
+    def open_startup_folder(self):
+        folder = get_startup_folder()
+        if not folder or not folder.exists():
+            messagebox.showinfo("No startup folder", "Startup folder not found")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(folder))
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception as e:
+            messagebox.showwarning("Open folder", f"Failed to open folder: {e}")
+
+    def _load_startup_log(self):
+        try:
+            if STARTUP_LOG_PATH.exists():
+                self.startup_log = json.loads(STARTUP_LOG_PATH.read_text(encoding="utf-8") or "[]")
+                self._log(f"Loaded startup log ({len(self.startup_log)} entries) from {STARTUP_LOG_PATH}")
+            else:
+                self.startup_log = []
+        except Exception as e:
+            self._log(f"Failed to load startup log: {e}")
+            self.startup_log = []
 
     # ---------- helpers ----------
     def _log(self, text):
@@ -482,23 +587,78 @@ class EZMountApp(tk.Tk):
     def _refresh_active_list(self):
         self.lst_active.delete(0, "end")
         for am in self.active_mounts:
-            pid = getattr(am["proc"], "pid", "N/A")
-            started = time.strftime("%H:%M:%S", time.localtime(am["started_at"]))
-            self.lst_active.insert("end", f"{am['mapping']}  pid={pid}  started={started}")
+            pid = getattr(am["proc"], "pid", "N/A") if am.get("proc") else "N/A"
+            started = time.strftime("%H:%M:%S", time.localtime(am["started_at"])) if am.get("started_at") else "-"
+            det = " (detected)" if am.get("detected") else ""
+            src = " [startup]" if am.get("from_startup_log") else ""
+            self.lst_active.insert("end", f"{am['mapping']}  pid={pid}  started={started}{det}{src}")
 
     def _refresh_status_periodic(self):
         changed = False
+        # remove finished processes we started
         for am in list(self.active_mounts):
-            if am["proc"].poll() is not None:
+            if am.get("proc") and am["proc"].poll() is not None:
                 try:
                     self.active_mounts.remove(am)
                 except ValueError:
                     pass
                 changed = True
+        # scan for external mounts (UI mappings + startup log)
+        self.scan_for_external_mounts()
         if changed:
             self._refresh_active_list()
         self.after(2000, self._refresh_status_periodic)
 
+    # ---------- detection of existing mounts ----------
+    def scan_for_external_mounts(self):
+        """
+        Detect mounts by checking mapping drives and startup_log entries.
+        Adds any found drives to self.active_mounts as detected. Avoid duplicates.
+        """
+        detected_now = []
+        # check UI mappings first
+        for m in self.mappings:
+            try:
+                d = m["drive_widget"].get().strip()
+            except Exception:
+                continue
+            if not d:
+                continue
+            if self._is_drive_in_use(d):
+                mapping_text = f"{m['remote_widget'].get().strip()} -> {d}"
+                if not any(am["mapping"] == mapping_text for am in self.active_mounts):
+                    self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": False})
+                    self._log(f"Detected external mount (from mappings): {mapping_text}")
+                detected_now.append(mapping_text)
+
+        # check startup log entries (may include mappings no longer in UI)
+        for entry in self.startup_log:
+            drive = entry.get("drive")
+            remote = entry.get("remote") or ""
+            label = entry.get("label") or ""
+            if not drive:
+                continue
+            if self._is_drive_in_use(drive):
+                mapping_text = f"{remote} -> {drive}" if remote else f"{label} -> {drive}"
+                # avoid duplicating
+                if not any(am["mapping"] == mapping_text for am in self.active_mounts):
+                    self.active_mounts.append({"mapping": mapping_text, "proc": None, "started_at": time.time(), "detected": True, "from_startup_log": True})
+                    self._log(f"Detected external mount (from startup log): {mapping_text}")
+                detected_now.append(mapping_text)
+
+        # remove stale detected mounts that no longer exist
+        removed = []
+        for am in list(self.active_mounts):
+            if am.get("detected"):
+                if am["mapping"] not in detected_now:
+                    try:
+                        self.active_mounts.remove(am)
+                        removed.append(am["mapping"])
+                    except ValueError:
+                        pass
+        if removed:
+            self._log(f"Removed stale detected mounts: {removed}")
+        self._refresh_active_list()
 
 if __name__ == "__main__":
     app = EZMountApp()
