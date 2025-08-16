@@ -200,10 +200,10 @@ End Function
 Function GetMaskedPassword()
   Dim ps, ex, out
   ' PowerShell masked prompt; returns plaintext via StdOut
-  ps = "powershell -NoProfile -WindowStyle Hidden -Command " & _
-       """$p = Read-Host 'Enter rclone.conf password (leave blank if none)' -AsSecureString; " & _
-       "$b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($p); " & _
-       "[Runtime.InteropServices.Marshal]::PtrToStringAuto($b)"""
+  ps = "powershell -NoProfile -Command " & _
+     """$p = Read-Host 'Enter rclone.conf password (leave blank if none)' -AsSecureString; " & _
+     "$b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($p); " & _
+     "[Runtime.InteropServices.Marshal]::PtrToStringAuto($b)"""
   On Error Resume Next
   Set ex = wsh.Exec(ps)
   If Err.Number <> 0 Then
