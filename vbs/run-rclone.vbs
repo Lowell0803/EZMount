@@ -40,8 +40,22 @@ pw = GetMaskedPassword() ' user can leave blank if config is not encrypted
 WriteLog "===== RCLONE SESSION " & Now & " ====="
 If pw <> "" Then
   WriteLog "[INFO] Password provided (hidden)"
+  
+  ' ---- Test password validity ----
+  If Not TestPassword(pw) Then
+    WriteLog "[ERROR] Invalid or missing password. Exiting."
+    MsgBox "Invalid or missing rclone.conf password. Exiting.", vbCritical, "Rclone EZMount"
+    WScript.Quit 1
+  End If
 Else
   WriteLog "[INFO] No password provided"
+  
+  ' ---- Test whether config requires password ----
+  If Not TestPassword("") Then
+    WriteLog "[ERROR] Config is encrypted but no password entered. Exiting."
+    MsgBox "rclone.conf is encrypted but no password entered. Exiting.", vbCritical, "Rclone EZMount"
+    WScript.Quit 1
+  End If
 End If
 
 ' ===== Menu with current status =====
@@ -187,7 +201,6 @@ Function CreatePasswordHelper(plain)
   Dim helperPath, tf
   helperPath = scriptFolder & "\._pw_" & CStr(Int((Rnd()*900000)+100000)) & ".cmd"
   Set tf = fso.CreateTextFile(helperPath, True)
-  ' Avoid showing the password in the file listing output
   tf.WriteLine "@echo off"
   tf.WriteLine "echo " & plain
   tf.Close
@@ -199,7 +212,6 @@ End Function
 
 Function GetMaskedPassword()
   Dim ps, ex, out
-  ' PowerShell masked prompt; returns plaintext via StdOut
   ps = "powershell -NoProfile -Command " & _
      """$p = Read-Host 'Enter rclone.conf password (leave blank if none)' -AsSecureString; " & _
      "$b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($p); " & _
@@ -208,10 +220,26 @@ Function GetMaskedPassword()
   Set ex = wsh.Exec(ps)
   If Err.Number <> 0 Then
     On Error GoTo 0
-    GetMaskedPassword = "" ' PS not available; fallback to blank
+    GetMaskedPassword = ""
     Exit Function
   End If
   On Error GoTo 0
   out = ex.StdOut.ReadAll
   GetMaskedPassword = Trim(out)
+End Function
+
+Function TestPassword(plain)
+  Dim helperPath, cmd, exitCode
+  If plain <> "" Then
+    helperPath = CreatePasswordHelper(plain)
+    cmd = "cmd /c rclone listremotes --ask-password=false --password-command ""cmd /c """ & helperPath & """"" --config """ & confPath & """ >nul 2>&1"
+    exitCode = wsh.Run(cmd, 0, True)
+    On Error Resume Next
+    fso.DeleteFile helperPath, True
+    On Error GoTo 0
+  Else
+    cmd = "cmd /c rclone listremotes --ask-password=false --config """ & confPath & """ >nul 2>&1"
+    exitCode = wsh.Run(cmd, 0, True)
+  End If
+  TestPassword = (exitCode = 0)
 End Function
