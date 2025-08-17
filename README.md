@@ -6,7 +6,7 @@
   <img src="./readme/logo.png" alt="EZMount Logo" width="400"/>
 </p>
 
-EZMount is a small GUI utility (Tk/Ttk) that helps manage rclone mounts and simple startup automation. It provides a compact way to mount/unmount cloud remotes, track active mounts, and create startup entries that will re-create mounts on login.
+EZMount is a small GUI utility (Tk/Ttk) that helps manage rclone mounts and simple startup automation.
 
 ---
 

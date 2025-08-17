@@ -1,21 +1,48 @@
 Option Explicit
 Randomize
 
-' ==== USER MAPPING (edit as needed) ====
-Dim labelsA, remotesA, lettersA
-labelsA  = Array("Acads", "Cloud")
-remotesA = Array("backblaze-acads:", "backblaze-cloud:")
-lettersA = Array("X:", "Y:")
-' =======================================
-
-Dim fso, wsh, scriptFolder, appdataRclone, confPath, logFile, pw
-Dim i, menu, choice
-
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set wsh = CreateObject("WScript.Shell")
 
 scriptFolder   = fso.GetParentFolderName(WScript.ScriptFullName)
 If scriptFolder = "" Then scriptFolder = "."
+' ==== READ CSV FOR MOUNTS ====
+Dim labelsA(), remotesA(), lettersA()
+Dim ts, line, fields, idx
+
+idx = -1
+If Not fso.FileExists(scriptFolder & "\mounts.csv") Then
+    MsgBox "mounts.csv not found!", vbCritical, "Missing CSV"
+    WScript.Quit 1
+End If
+
+Set ts = fso.OpenTextFile(scriptFolder & "\mounts.csv", 1, False)
+' Skip header
+If Not ts.AtEndOfStream Then ts.ReadLine
+
+Do While Not ts.AtEndOfStream
+    line = Trim(ts.ReadLine)
+    If line <> "" Then
+        fields = Split(line, ",")
+        If UBound(fields) >= 2 Then
+            idx = idx + 1
+            ReDim Preserve labelsA(idx)
+            ReDim Preserve remotesA(idx)
+            ReDim Preserve lettersA(idx)
+
+            labelsA(idx) = Trim(fields(0))
+            remotesA(idx) = Trim(fields(1))
+            lettersA(idx) = Trim(fields(2))
+        End If
+    End If
+Loop
+ts.Close
+' =======================================
+
+Dim fso, wsh, scriptFolder, appdataRclone, confPath, logFile, pw
+Dim i, menu, choice
+
+
 appdataRclone  = wsh.ExpandEnvironmentStrings("%APPDATA%") & "\rclone"
 logFile        = scriptFolder & "\rclone_mount.log"
 
