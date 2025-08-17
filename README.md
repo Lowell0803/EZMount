@@ -2,7 +2,9 @@
 
 [![Made with Python](readme/made-with-python.svg)](https://forthebadge.com) [![Start Date](readme/start-date.svg)](https://forthebadge.com)
 
-<img src="./readme/ezmount.png" alt="Cover Image" width="500"/>
+<div align="center">
+  <img src="./readme/ezmount.png" alt="Cover Image" width="500"/>
+</div>
 
 EZMount is a lightweight GUI utility (Tk/Ttk) designed to help you **manage RClone mounts** and **automate startup mounting** on Windows. It simplifies connecting cloud storage like AWS S3 or Backblaze B2 directly to your PC without dealing with command-line arguments.
 
